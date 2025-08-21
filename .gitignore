@@ -1,0 +1,9 @@
+.DS_store
+.vscode
+*Manifest.toml
+*.swp
+*.un~
+*.DS_Store
+*.out
+.gitattributes
+output/
