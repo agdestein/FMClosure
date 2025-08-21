@@ -7,6 +7,7 @@ end
 using Burgers
 using CairoMakie
 using Lux
+# using LuxCUDA
 using MLUtils
 using NNlib
 using Optimisers
@@ -49,9 +50,9 @@ let
 end
 
 # Create Burgers dataset
-grid = Grid(2π, 2048)
+grid = Grid(2π, 4096)
 visc = 2e-3
-data = create_data(; grid, visc, nsample = 10, ntime = 100, nsubstep = 10);
+data = create_data(; grid, visc, nsample = 200, ntime = 100, nsubstep = 10);
 
 let
     isample = 1
@@ -63,45 +64,49 @@ let
     fig
 end
 
+using ComponentArrays
+
 let
     model =
         UNet(; channels = [16, 32, 64], nresidual = 2, t_embed_dim = 40, y_embed_dim = 20)
     nsample = 5
-    x = randn(Float32, grid.n, 1, nsample)
-    y = randn(Float32, grid.n, 1, nsample)
-    t = randn(Float32, 1, 1, nsample)
-    ps, st = Lux.setup(Xoshiro(0), model)
+    x = randn(Float32, grid.n, 1, nsample) |> gpu_device()
+    y = randn(Float32, grid.n, 1, nsample) |> gpu_device()
+    t = randn(Float32, 1, 1, nsample) |> gpu_device()
+    ps, st = Lux.setup(Xoshiro(0), model) |> gpu_device()
     model((x, t, y), ps, Lux.testmode(st))
-    gradient(ps -> sum(abs2, first(model((x, t, y), ps, st))), ps |> ComponentArray) |> first |> Array |> extrema
-end
+    gradient(ps -> sum(abs3, first(model((x, t, y), ps, st))), ps)
+end;
 
-model = UNet(; channels = [16, 32, 64], nresidual = 2, t_embed_dim = 40, y_embed_dim = 20)
+model = UNet(; channels = [64, 128], nresidual = 2, t_embed_dim = 64, y_embed_dim = 64)
 unet = train(;
     model,
     rng = Xoshiro(0),
-    nepoch = 1,
-    dataloader = create_dataloader(grid, data, 50),
+    nepoch = 10,
+    dataloader = create_dataloader(grid, data, 200),
     opt = Adam(1.0f-3),
 )
 
 let
+    dev = gpu_device()
     y, z = data
-    y = reshape(y[:, 1, 1], :, 1, 1) |> f32
-    z = reshape(z[:, 1, 1], :, 1, 1) |> f32
+    y = reshape(y[:, 1, 30], :, 1, 1) |> f32 |> dev
+    z = reshape(z[:, 1, 30], :, 1, 1) |> f32 |> dev
     x = randn!(similar(z))
-    nstep = 100
-    t = fill(0f0, 1, 1, size(z, 3))
+    nstep = 1000
+    t = fill(0f0, 1, 1, size(z, 3)) |> dev
     for i = 1:nstep
         @info i
         u = unet(x, t, y)
-        @. x += 1 / nstep * u
-        @. t += 1 / nstep
+        @. x += 1f0 / nstep * u
+        @. t += 1f0 / nstep
     end
-    # x *= grid.n
+    x *= grid.n
     fig = Figure()
     ax = Axis(fig[1, 1])
-    lines!(ax, points(grid), z[:])
-    lines!(ax, points(grid), x[:])
+    lines!(ax, points(grid), x[:] |> cpu_device())
+    lines!(ax, points(grid), z[:] |> cpu_device())
+    ylims!(ax, -300, 300)
     save("$outdir/prediction.pdf", fig; backend = CairoMakie)
     fig
 end
