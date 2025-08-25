@@ -69,12 +69,7 @@ function create_data(; grid, params, nsample, nsubstep, ntime, dt)
     for isample = 1:nsample
         @show isample
         u = randomfield(grid, 10.0)
-        cache =
-            similar(u),
-            similar(u),
-            similar(u),
-            similar(u),
-            similar(u)
+        cache = similar(u), similar(u), similar(u), similar(u), similar(u)
         for itime = 1:ntime
             # @show (isample, itime)
             inputs[:, itime, isample] = u

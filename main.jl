@@ -111,8 +111,8 @@ let
     for i = 1:nstep
         @info i
         u = unet(x, t, y)
-        @. x += 1f0 / nstep * u
-        @. t += 1f0 / nstep
+        @. x += 1.0f0 / nstep * u
+        @. t += 1.0f0 / nstep
     end
     fig = Figure()
     ax = Axis(fig[1, 1])

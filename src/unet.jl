@@ -1,11 +1,10 @@
 silu(x) = @. x / (1 + exp(-x))
 
 "Conv with periodic padding (`pad` on each side)."
-CircularConv(args...; pad, kwargs...) =
-    Chain(
-        WrappedFunction(x -> NNlib.pad_circular(x, pad; dims=1)),
-        Conv(args...; kwargs...),
-    )
+CircularConv(args...; pad, kwargs...) = Chain(
+    WrappedFunction(x -> NNlib.pad_circular(x, pad; dims = 1)),
+    Conv(args...; kwargs...),
+)
 
 function FourierEncoder(dim)
     @assert dim % 2 == 0
@@ -30,7 +29,10 @@ ResidualLayer(n, nt, ny) =
             Dense(nt => n),
             ReshapeLayer((1, n)),
         ),
-        y_adapter = Chain(CircularConv((3,), ny => ny, silu; pad = 1), CircularConv((3,), ny => n; pad = 1)),
+        y_adapter = Chain(
+            CircularConv((3,), ny => ny, silu; pad = 1),
+            CircularConv((3,), ny => n; pad = 1),
+        ),
     ) do (x, t_embed, y_embed)
         res = copy(x)
 
@@ -96,7 +98,10 @@ UNet(; channels, nresidual, t_embed_dim, y_embed_dim) =
             silu,
         ),
         time_embedder = FourierEncoder(t_embed_dim),
-        y_embedders = map(i -> CircularConv((3,), 1 => y_embed_dim; stride = 2^(i-1), pad = 1), 1:length(channels)),
+        y_embedders = map(
+            i -> CircularConv((3,), 1 => y_embed_dim; stride = 2^(i-1), pad = 1),
+            1:length(channels),
+        ),
         encoders = map(
             i -> Encoder(channels[i], channels[i+1], nresidual, t_embed_dim, y_embed_dim),
             1:(length(channels)-1),
