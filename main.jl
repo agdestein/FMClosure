@@ -17,7 +17,7 @@ using Zygote
 
 outdir = joinpath(@__DIR__, "output") |> mkpath
 
-burgers(n, visc) = (; grid = Grid(2π, 8192), params = (; visc))
+burgers(n, visc) = (; grid = Grid(2π, n), params = (; visc))
 kdv(n) = (;
     grid = Grid(30.0, n),
     params = (;), # No params for KdV
@@ -63,7 +63,7 @@ end
 # (; grid, params) = burgers(2048, 2e-3)
 (; grid, params) = kdv(256)
 dt = 1e-3
-data = create_data(; grid, params, nsample = 200, ntime = 100, nsubstep = 10, dt);
+data = create_data(; grid, params, nsample = 100, ntime = 100, nsubstep = 10, dt);
 
 # Show two successive states
 let
@@ -86,7 +86,7 @@ let
     ax = Axis(fig[1, 1])
     lines!(ax, x, data[1][:, itime, isample])
     lines!(ax, x, data[2][:, itime, isample])
-    fig |> display
+    fig
 end
 
 model = UNet(; channels = [16, 32], nresidual = 2, t_embed_dim = 32, y_embed_dim = 32)
@@ -106,13 +106,14 @@ let
     y = reshape(y[:, itime, isample], :, 1, 1) |> f32 |> dev
     z = reshape(z[:, itime, isample], :, 1, 1) |> f32 |> dev
     x = randn!(similar(z))
-    nstep = 10
+    nstep = 100
     t = fill(0.0f0, 1, 1, size(z, 3)) |> dev
+    h = 1.0f0 / nstep
     for i = 1:nstep
         @info i
         u = unet(x, t, y)
-        @. x += 1.0f0 / nstep * u
-        @. t += 1.0f0 / nstep
+        @. x += h * u
+        @. t += h
     end
     fig = Figure()
     ax = Axis(fig[1, 1])
@@ -122,6 +123,42 @@ let
     # lines!(ax, points(grid), input; label = "Input")
     lines!(ax, points(grid), input + target; label = "Target")
     lines!(ax, points(grid), input + prediction; label = "Prediction")
+    axislegend(ax)
+    save("$outdir/prediction.pdf", fig; backend = CairoMakie)
+    fig
+end
+
+# Plug FM model back into physical time stepping loop
+let
+    isample = 1
+    dev = gpu_device()
+    inputs, _ = data
+    # ntime = size(y, 2)
+    ntime = 10
+    y = reshape(inputs[:, 1, isample], :, 1, 1) |> f32 |> dev
+    x = similar(y) |> dev
+    t = fill(0.0f0, 1, 1, size(y, 3)) |> dev
+    nsubstep = 100
+    h = 1.0f0 / nsubstep
+    for itime = 1:ntime # Physical time stepping
+        @show itime
+        t = fill!(t, 0)
+        randn!(x) # Random initial conditions
+        for isub = 1:nsubstep # Pseudo-time stepping
+            u = unet(x, t, y)
+            @. x += h * u
+            @. t += h
+        end
+        @. y += x # x is the physical step
+    end
+    fig = Figure()
+    ax = Axis(fig[1, 1])
+    input = inputs[:, 1, isample]
+    target = inputs[:, ntime+1, isample]
+    prediction = y[:] |> cpu_device()
+    # lines!(ax, points(grid), input; label = "Input")
+    lines!(ax, points(grid), target; label = "Target")
+    lines!(ax, points(grid), prediction; label = "Prediction")
     axislegend(ax)
     save("$outdir/prediction.pdf", fig; backend = CairoMakie)
     fig

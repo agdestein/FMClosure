@@ -10,7 +10,12 @@ end
 "Get grid spacing."
 dx(g::Grid) = g.l / g.n
 
-points(g::Grid) = range(dx(g) / 2, g.l - dx(g) / 2, g.n)
+"""
+The left point is always at zero.
+The (`n + 1`-th) right point is at `l`, but it is not included since it
+is periodically redundant.
+"""
+points(g::Grid) = range(0, g.l, g.n + 1)[1:(end-1)]
 
 "Call `f(args..., i)` for all grid indices `i`."
 apply!(f, g::Grid, args) =

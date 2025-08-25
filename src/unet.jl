@@ -6,6 +6,21 @@ CircularConv(args...; pad, kwargs...) = Chain(
     Conv(args...; kwargs...),
 )
 
+"
+Upsample periodic field by a factor of 2.
+The grids have contain `n + 1` and `2n + 1` points, respectively.
+The left and right boundary points overlap periodically, and
+so the value of the input field in the right point is not
+included in the input `x`.
+"
+CircularUpsample() =
+    WrappedFunction() do x
+        n = size(x, 1)
+        x = pad_circular(x, (0, 1); dims = 1) # Add redundant right point
+        x = upsample_linear(x; size = 2 * n + 1)
+        selectdim(x, 1, 1:(2*n)) # Remove redundant right point
+    end
+
 function FourierEncoder(dim)
     @assert dim % 2 == 0
     half_dim = div(dim, 2)
@@ -80,7 +95,7 @@ Midcoder(nchannel, nresidual, nt, ny) =
 
 Decoder(nin, nout, nresidual, nt, ny) =
     @compact(;
-        upsample = Chain(Upsample(2, :bilinear), CircularConv((3,), nin => nout; pad = 1)),
+        upsample = Chain(CircularUpsample(), CircularConv((3,), nin => nout; pad = 1)),
         res_blocks = fill(ResidualLayer(nout, nt, ny), nresidual),
     ) do (x, t_embed, y_embed)
         x = upsample(x)
