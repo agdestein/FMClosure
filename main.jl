@@ -7,6 +7,7 @@ end
 using FMClosure
 using CairoMakie
 using Lux
+# using LuxCUDA
 using MLUtils
 using NNlib
 using Optimisers
@@ -62,7 +63,7 @@ end
 # (; grid, params) = burgers(2048, 2e-3)
 (; grid, params) = kdv(256)
 dt = 1e-3
-data = create_data(; grid, params, nsample = 10, ntime = 100, nsubstep = 10, dt);
+data = create_data(; grid, params, nsample = 200, ntime = 100, nsubstep = 10, dt);
 
 # Show two successive states
 let
@@ -88,7 +89,7 @@ let
     fig |> display
 end
 
-model = UNet(; channels = [16, 32, 64], nresidual = 2, t_embed_dim = 40, y_embed_dim = 20)
+model = UNet(; channels = [64, 128], nresidual = 2, t_embed_dim = 64, y_embed_dim = 64)
 unet = train(;
     model,
     rng = Xoshiro(0),
@@ -100,25 +101,27 @@ unet = train(;
 let
     isample = 1
     itime = 1
+    dev = gpu_device()
     y, z = data
-    y = reshape(y[:, itime, isample], :, 1, 1) |> f32
-    z = reshape(z[:, itime, isample], :, 1, 1) |> f32
+    y = reshape(y[:, itime, isample], :, 1, 1) |> f32 |> dev
+    z = reshape(z[:, itime, isample], :, 1, 1) |> f32 |> dev
     x = randn!(similar(z))
     nstep = 10
-    t = fill(0.0f0, 1, 1, size(z, 3))
+    t = fill(0.0f0, 1, 1, size(z, 3)) |> dev
     for i = 1:nstep
         @info i
         u = unet(x, t, y)
-        @. x += 1 / nstep * u
-        @. t += 1 / nstep
+        @. x += 1f0 / nstep * u
+        @. t += 1f0 / nstep
     end
     fig = Figure()
     ax = Axis(fig[1, 1])
-    # lines!(ax, points(grid), y[:]; label = "Input")
-    lines!(ax, points(grid), y[:] + z[:]; label = "Target")
-    lines!(ax, points(grid), y[:] + x[:]; label = "Prediction")
-    # lines!(ax, points(grid), z[:]; label = "Target")
-    # lines!(ax, points(grid), x[:]; label = "Prediction")
+    input = y[:] |> cpu_device()
+    target = z[:] |> cpu_device()
+    prediction = x[:] |> cpu_device()
+    # lines!(ax, points(grid), input; label = "Input")
+    lines!(ax, points(grid), input + target; label = "Target")
+    lines!(ax, points(grid), input + prediction; label = "Prediction")
     axislegend(ax)
     save("$outdir/prediction.pdf", fig; backend = CairoMakie)
     fig
