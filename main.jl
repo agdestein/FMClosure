@@ -89,12 +89,12 @@ let
     fig |> display
 end
 
-model = UNet(; channels = [64, 128], nresidual = 2, t_embed_dim = 64, y_embed_dim = 64)
+model = UNet(; channels = [16, 32], nresidual = 2, t_embed_dim = 32, y_embed_dim = 32)
 unet = train(;
     model,
     rng = Xoshiro(0),
-    nepoch = 30,
-    dataloader = create_dataloader(grid, data, 50),
+    nepoch = 5,
+    dataloader = create_dataloader(grid, data, 100),
     opt = AdamW(1.0f-3),
 )
 
