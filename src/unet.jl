@@ -148,20 +148,25 @@ function create_dataloader(grid, data, batchsize)
     y, z = data
     y, z = reshape(y, grid.n, 1, :), reshape(z, grid.n, 1, :)
     y, z = (y, z) |> f32
-    z ./= grid.n
+    # z ./= grid.n
     DataLoader((y, z); batchsize, shuffle = true, partial = false)
 end
 
+"""
+Train an flow-matching ODE to predict next state (`z`) from current state (`y`).
+The ODE has Gaussian initial contitions `x0` and evolve via `dx = model(x, t, y) dt`
+from time 0 to 1.
+The target trajectory `x` is a linear interpolation between `x0` and `z`.
+"""
 function train(; model, rng, nepoch, dataloader, opt)
     device = gpu_device()
     ps, st = Lux.setup(rng, model) |> device
     train_state = Training.TrainState(model, ps, st, opt)
     loss = MSELoss()
-    # loss = GenericLossFunction((a, b) -> sum(abs2, a - b) / sum(abs2, b))
     for iepoch = 1:nepoch, (ibatch, batch) in enumerate(dataloader)
         y, z = batch |> device
-        x0 = randn!(similar(z))
-        t = rand!(similar(z, 1, 1, size(z, ndims(z))))
+        x0 = randn!(similar(z)) # Gaussian initial conditions
+        t = rand!(similar(z, 1, 1, size(z, ndims(z)))) # Pseudo-times
         x = @. t * z + (1 - t) * x0 # Linear interpolation
         u = @. z - x0 # Linear conditional vector field
         _, l, _, train_state =

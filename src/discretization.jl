@@ -18,16 +18,39 @@ apply!(f, g::Grid, args) =
         f(args..., i)
     end
 
-@inline function force!(f, u, g::Grid, visc, i)
+# "Burgers equation right hand side."
+# @inline function force!(f, u, g::Grid, (; visc), i)
+#     h = dx(g)
+#     a = -(u[i] + u[i-1|>g])^2 / 8 + visc * (u[i] - u[i-1|>g]) / h
+#     b = -(u[i+1|>g] + u[i])^2 / 8 + visc * (u[i+1|>g] - u[i]) / h
+#     f[i] = (b - a) / h
+# end
+
+"Korteweg-de Vries equation right hand side."
+@inline function force!(f, u, g::Grid, _, i)
     h = dx(g)
-    a = -(u[i] + u[i-1|>g])^2 / 8 + visc * (u[i] - u[i-1|>g]) / h
-    b = -(u[i+1|>g] + u[i])^2 / 8 + visc * (u[i+1|>g] - u[i]) / h
-    f[i] = (b - a) / h
+    a = (u[i] + u[i-1|>g])^2 / 4
+    b = (u[i+1|>g] + u[i])^2 / 4
+    # b = u[i+1|>g]^2 / 2
+    # a = u[i-1|>g]^2 / 2
+    f[i] = 3 * (b - a) / h - (u[i+2|>g] / 2 - u[i+1|>g] + u[i-1|>g] - u[i-2|>g] / 2) / h^3
 end
 
 function forward_euler!(u, f, grid, visc, dt)
     apply!(force!, grid, (f, u, grid, visc))
     @. u += dt * f
+end
+
+function rk4!(u, cache, grid, visc, dt)
+    v, k1, k2, k3, k4 = cache
+    apply!(force!, grid, (k1, u, grid, visc))
+    @. v = u + dt / 2 * k1
+    apply!(force!, grid, (k2, v, grid, visc))
+    @. v = u + dt / 2 * k2
+    apply!(force!, grid, (k3, v, grid, visc))
+    @. v = u + dt * k2
+    apply!(force!, grid, (k4, v, grid, visc))
+    @. u += dt * (k1 / 6 + k2 / 3 + k3 / 3 + k4 / 6)
 end
 
 propose_timestep(u, g::Grid, visc) = min(dx(g) / maximum(abs, u), dx(g)^2 / visc)
@@ -39,24 +62,29 @@ function randomfield(g::Grid, kpeak)
     irfft(c * g.n, g.n)
 end
 
-function create_data(; grid, visc, nsample, nsubstep, ntime, cfl = 0.3)
-    inputs = zeros(grid.n, nsample, ntime)
+function create_data(; grid, params, nsample, nsubstep, ntime, dt)
+    inputs = zeros(grid.n, ntime, nsample)
     outputs = similar(inputs)
+    adaptive = isnothing(dt)
     for isample = 1:nsample
         @show isample
         u = randomfield(grid, 10.0)
-        f = similar(u)
+        cache =
+            similar(u),
+            similar(u),
+            similar(u),
+            similar(u),
+            similar(u)
         for itime = 1:ntime
             # @show (isample, itime)
-            # Skip first iter to get initial pair
-            itime == 1 || for _ = 1:nsubstep
-                dt = 0.3 * propose_timestep(u, grid, visc)
-                forward_euler!(u, f, grid, visc, dt)
+            inputs[:, itime, isample] = u
+            for isubstep = 1:nsubstep
+                # forward_euler!(u, cache, grid, params, dt)
+                rk4!(u, cache, grid, params, dt)
             end
-            apply!(force!, grid, (f, u, grid, visc))
-            inputs[:, isample, itime] = u
-            outputs[:, isample, itime] = f
+            outputs[:, itime, isample] = u
         end
     end
+    @. outputs -= inputs # Let the difference be the target
     inputs, outputs
 end
