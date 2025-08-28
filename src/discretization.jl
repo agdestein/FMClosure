@@ -53,7 +53,7 @@ function rk4!(u, cache, grid, visc, dt)
     apply!(force!, grid, (k2, v, grid, visc))
     @. v = u + dt / 2 * k2
     apply!(force!, grid, (k3, v, grid, visc))
-    @. v = u + dt * k2
+    @. v = u + dt * k3
     apply!(force!, grid, (k4, v, grid, visc))
     @. u += dt * (k1 / 6 + k2 / 3 + k3 / 3 + k4 / 6)
 end
