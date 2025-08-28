@@ -6,13 +6,13 @@ CircularConv(args...; pad, kwargs...) = Chain(
     Conv(args...; kwargs...),
 )
 
-"
+"""
 Upsample periodic field by a factor of 2.
-The grids have contain `n + 1` and `2n + 1` points, respectively.
+The grids contain `n + 1` and `2n + 1` points, respectively.
 The left and right boundary points overlap periodically, and
 so the value of the input field in the right point is not
 included in the input `x`.
-"
+"""
 CircularUpsample() =
     WrappedFunction() do x
         n = size(x, 1)
@@ -21,10 +21,10 @@ CircularUpsample() =
         selectdim(x, 1, 1:(2*n)) # Remove redundant right point
     end
 
-function FourierEncoder(dim)
+function FourierEncoder(dim, device)
     @assert dim % 2 == 0
     half_dim = div(dim, 2)
-    weights = randn(Float32, 1, half_dim) |> gpu_device()
+    weights = randn(Float32, 1, half_dim)
     @compact(; weights) do t
         freqs = @. 2 * t * weights
         sin_embed = @. sqrt(2.0f0) * sinpi(freqs)
@@ -34,19 +34,27 @@ function FourierEncoder(dim)
     end
 end
 
-ResidualLayer(n, nt, ny) =
+ResidualLayer(nspace, nchan, nt, ny) =
     @compact(;
-        block1 = Chain(silu, BatchNorm(n), CircularConv((3,), n => n; pad = 1)),
-        block2 = Chain(silu, BatchNorm(n), CircularConv((3,), n => n; pad = 1)),
+        block1 = Chain(
+            gelu,
+            LayerNorm((nspace, nchan)),
+            CircularConv((3,), nchan => nchan; pad = 1),
+        ),
+        block2 = Chain(
+            gelu,
+            LayerNorm((nspace, nchan)),
+            CircularConv((3,), nchan => nchan; pad = 1),
+        ),
         time_adapter = Chain(
             ReshapeLayer((nt,)),
-            Dense(nt => nt, silu),
-            Dense(nt => n),
-            ReshapeLayer((1, n)),
+            Dense(nt => nt, gelu),
+            Dense(nt => nchan),
+            ReshapeLayer((1, nchan)),
         ),
         y_adapter = Chain(
-            CircularConv((3,), ny => ny, silu; pad = 1),
-            CircularConv((3,), ny => n; pad = 1),
+            CircularConv((3,), ny => ny, gelu; pad = 1),
+            CircularConv((3,), ny => nchan; pad = 1),
         ),
     ) do (x, t_embed, y_embed)
         res = copy(x)
@@ -71,9 +79,9 @@ ResidualLayer(n, nt, ny) =
         @return x
     end
 
-Encoder(nin, nout, nresidual, nt, ny) =
+Encoder(nspace, nin, nout, nresidual, nt, ny) =
     @compact(;
-        res_blocks = fill(ResidualLayer(nin, nt, ny), nresidual),
+        res_blocks = fill(ResidualLayer(nspace, nin, nt, ny), nresidual),
         downsample = CircularConv((3,), nin => nout; stride = 2, pad = 1),
     ) do (x, t_embed, y_embed)
         for block in res_blocks
@@ -83,9 +91,9 @@ Encoder(nin, nout, nresidual, nt, ny) =
         @return x
     end
 
-Midcoder(nchannel, nresidual, nt, ny) =
+Midcoder(nspace, nchannel, nresidual, nt, ny) =
     @compact(;
-        res_blocks = fill(ResidualLayer(nchannel, nt, ny), nresidual),
+        res_blocks = fill(ResidualLayer(nspace, nchannel, nt, ny), nresidual),
     ) do (x, t_embed, y_embed)
         for block in res_blocks
             x = block((x, t_embed, y_embed))
@@ -93,10 +101,10 @@ Midcoder(nchannel, nresidual, nt, ny) =
         @return x
     end
 
-Decoder(nin, nout, nresidual, nt, ny) =
+Decoder(nspace, nin, nout, nresidual, nt, ny) =
     @compact(;
         upsample = Chain(CircularUpsample(), CircularConv((3,), nin => nout; pad = 1)),
-        res_blocks = fill(ResidualLayer(nout, nt, ny), nresidual),
+        res_blocks = fill(ResidualLayer(nspace, nout, nt, ny), nresidual),
     ) do (x, t_embed, y_embed)
         x = upsample(x)
         for block in res_blocks
@@ -105,28 +113,48 @@ Decoder(nin, nout, nresidual, nt, ny) =
         @return x
     end
 
-UNet(; channels, nresidual, t_embed_dim, y_embed_dim) =
+UNet(; nspace, channels, nresidual, t_embed_dim, y_embed_dim, device) =
     @compact(;
         init_conv = Chain(
             CircularConv((3,), 1 => channels[1]; pad = 1),
-            BatchNorm(channels[1]),
-            silu,
+            LayerNorm((nspace, channels[1])),
+            gelu,
         ),
-        time_embedder = FourierEncoder(t_embed_dim),
+        time_embedder = FourierEncoder(t_embed_dim, device),
         y_embedders = map(
-            i -> CircularConv((3,), 1 => y_embed_dim; stride = 2^(i-1), pad = 1),
+            i -> CircularConv((3,), 1 => y_embed_dim; stride = 2^(i - 1), pad = 1),
             1:length(channels),
         ),
         encoders = map(
-            i -> Encoder(channels[i], channels[i+1], nresidual, t_embed_dim, y_embed_dim),
+            i -> Encoder(
+                div(nspace, 2^(i - 1)),
+                channels[i],
+                channels[i+1],
+                nresidual,
+                t_embed_dim,
+                y_embed_dim,
+            ),
             1:(length(channels)-1),
         ),
         decoders = map(
-            i -> Decoder(channels[i], channels[i-1], nresidual, t_embed_dim, y_embed_dim),
+            i -> Decoder(
+                div(nspace, 2^(i - 2)),
+                channels[i],
+                channels[i-1],
+                nresidual,
+                t_embed_dim,
+                y_embed_dim,
+            ),
             length(channels):-1:2,
         ),
-        midcoder = Midcoder(channels[end], nresidual, t_embed_dim, y_embed_dim),
-        final_conv = CircularConv((3,), channels[1] => 1; pad = 1),
+        midcoder = Midcoder(
+            div(nspace, 2^(length(channels) - 1)),
+            channels[end],
+            nresidual,
+            t_embed_dim,
+            y_embed_dim,
+        ),
+        final_conv = CircularConv((3,), channels[1] => 1; pad = 1, use_bias = false),
     ) do (x, t, y)
         # Embed t and y
         t_embed = time_embedder(t)
@@ -164,12 +192,12 @@ UNet(; channels, nresidual, t_embed_dim, y_embed_dim) =
         @return x
     end
 
-function create_dataloader(grid, data, batchsize)
+function create_dataloader(grid, data, batchsize, rng)
     y, z = data
     y, z = reshape(y, grid.n, 1, :), reshape(z, grid.n, 1, :)
     y, z = (y, z) |> f32
     # z ./= grid.n
-    DataLoader((y, z); batchsize, shuffle = true, partial = false)
+    DataLoader((y, z); batchsize, shuffle = true, partial = false, rng)
 end
 
 """
@@ -178,8 +206,7 @@ The ODE has Gaussian initial contitions `x0` and evolve via `dx = model(x, t, y)
 from time 0 to 1.
 The target trajectory `x` is a linear interpolation between `x0` and `z`.
 """
-function train(; model, rng, nepoch, dataloader, opt)
-    device = gpu_device()
+function train(; model, rng, nepoch, dataloader, opt, device)
     ps, st = Lux.setup(rng, model) |> device
     train_state = Training.TrainState(model, ps, st, opt)
     loss = MSELoss()

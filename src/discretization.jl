@@ -60,20 +60,20 @@ end
 
 propose_timestep(u, g::Grid, visc) = min(dx(g) / maximum(abs, u), dx(g)^2 / visc)
 
-function randomfield(g::Grid, kpeak)
+function randomfield(g::Grid, kpeak, rng)
     amp = sqrt(4 / kpeak / 3 / sqrt(π))
     k = 0:div(g.n, 2)
-    c = @. amp * (k / kpeak)^2 * exp(-(k / kpeak)^2 / 2 + 2π * im * rand())
+    c = @. amp * (k / kpeak)^2 * exp(-(k / kpeak)^2 / 2 + 2π * im * rand(rng))
     irfft(c * g.n, g.n)
 end
 
-function create_data(; grid, params, nsample, nsubstep, ntime, dt)
+function create_data(; grid, params, nsample, nsubstep, ntime, dt, rng)
     inputs = zeros(grid.n, ntime, nsample)
     outputs = similar(inputs)
     adaptive = isnothing(dt)
     for isample = 1:nsample
         @show isample
-        u = randomfield(grid, 10.0)
+        u = randomfield(grid, 10.0, rng)
         cache = similar(u), similar(u), similar(u), similar(u), similar(u)
         for itime = 1:ntime
             # @show (isample, itime)

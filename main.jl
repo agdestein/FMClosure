@@ -34,7 +34,6 @@ let
     t = 0.0
     tstop = 0.1
     while t < tstop
-        @show t
         # dt = 0.3 * propose_timestep(u, grid, visc)
         dt = 1e-3
         dt = min(dt, tstop - t) # Don't overstep
@@ -62,8 +61,15 @@ end
 # Create dataset
 # (; grid, params) = burgers(2048, 2e-3)
 (; grid, params) = kdv(256)
-dt = 1e-3
-data = create_data(; grid, params, nsample = 100, ntime = 100, nsubstep = 10, dt);
+data = create_data(;
+    grid,
+    params,
+    nsample = 100,
+    ntime = 100,
+    nsubstep = 10,
+    dt = 1e-3,
+    rng = Xoshiro(0),
+);
 
 # Show two successive states
 let
@@ -74,7 +80,8 @@ let
     ax = Axis(fig[1, 1])
     lines!(ax, x, data[1][:, itime, isample])
     lines!(ax, x, data[1][:, itime+1, isample])
-    fig |> display
+    save("$outdir/states.pdf", fig; backend = CairoMakie)
+    fig
 end
 
 # Show one input-output pair
@@ -86,28 +93,64 @@ let
     ax = Axis(fig[1, 1])
     lines!(ax, x, data[1][:, itime, isample])
     lines!(ax, x, data[2][:, itime, isample])
+    save("$outdir/io_pair.pdf", fig; backend = CairoMakie)
     fig
 end
 
-model = UNet(; channels = [16, 32], nresidual = 2, t_embed_dim = 32, y_embed_dim = 32)
+device = gpu_device()
+model = UNet(;
+    nspace = grid.n,
+    channels = [16, 32],
+    nresidual = 2,
+    t_embed_dim = 32,
+    y_embed_dim = 32,
+    device
+)
 unet = train(;
     model,
     rng = Xoshiro(0),
     nepoch = 5,
-    dataloader = create_dataloader(grid, data, 100),
+    dataloader = create_dataloader(grid, data, 100, Xoshiro(0)),
     opt = AdamW(1.0f-3),
+    device,
 )
+
+let
+    model = UNet(;
+        nspace = grid.n,
+        channels = [16, 32],
+        nresidual = 2,
+        t_embed_dim = 32,
+        y_embed_dim = 32,
+        device,
+    )
+    ps, st = Lux.setup(Xoshiro(0), model) |> device
+    nsample = 1
+    x = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
+    y = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
+    t = randn(Xoshiro(0), 1, 1, nsample) |> f32 |> device
+    model((x, t, y), ps, st) |> first
+    nothing
+end
+
+let
+    model = LayerNorm((grid.n, 1))
+    ps, st = Lux.setup(Xoshiro(0), model) |> device
+    nsample = 1
+    x = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
+    model(x, ps, st) |> first
+    nothing
+end
 
 let
     isample = 1
     itime = 1
-    dev = gpu_device()
     y, z = data
-    y = reshape(y[:, itime, isample], :, 1, 1) |> f32 |> dev
-    z = reshape(z[:, itime, isample], :, 1, 1) |> f32 |> dev
+    y = reshape(y[:, itime, isample], :, 1, 1) |> f32 |> device
+    z = reshape(z[:, itime, isample], :, 1, 1) |> f32 |> device
     x = randn!(similar(z))
     nstep = 100
-    t = fill(0.0f0, 1, 1, size(z, 3)) |> dev
+    t = fill(0.0f0, 1, 1, size(z, 3)) |> device
     h = 1.0f0 / nstep
     for i = 1:nstep
         @info i
@@ -131,18 +174,16 @@ end
 # Plug FM model back into physical time stepping loop
 let
     isample = 1
-    dev = gpu_device()
     inputs, _ = data
-    # ntime = size(y, 2)
     ntime = 10
-    y = reshape(inputs[:, 1, isample], :, 1, 1) |> f32 |> dev
-    x = similar(y) |> dev
-    t = fill(0.0f0, 1, 1, size(y, 3)) |> dev
+    y = reshape(inputs[:, 1, isample], :, 1, 1) |> f32 |> device
+    x = similar(y) |> device
+    t = fill(0.0f0, 1, 1, 1) |> device
     nsubstep = 100
     h = 1.0f0 / nsubstep
     for itime = 1:ntime # Physical time stepping
         @show itime
-        t = fill!(t, 0)
+        fill!(t, 0)
         randn!(x) # Random initial conditions
         for isub = 1:nsubstep # Pseudo-time stepping
             u = unet(x, t, y)
