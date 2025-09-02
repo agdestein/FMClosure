@@ -1,10 +1,8 @@
 silu(x) = @. x / (1 + exp(-x))
 
 "Conv with periodic padding (`pad` on each side)."
-CircularConv(args...; pad, kwargs...) = Chain(
-    WrappedFunction(x -> NNlib.pad_circular(x, pad; dims = 1)),
-    Conv(args...; kwargs...),
-)
+CircularConv(args...; pad, kwargs...) =
+    Chain(WrappedFunction(x -> pad_circular(x, pad; dims = 1)), Conv(args...; kwargs...))
 
 """
 Upsample periodic field by a factor of 2.
@@ -19,6 +17,16 @@ CircularUpsample() =
         x = pad_circular(x, (0, 1); dims = 1) # Add redundant right point
         x = upsample_linear(x; size = 2 * n + 1)
         selectdim(x, 1, 1:(2*n)) # Remove redundant right point
+    end
+
+CircularConvTranspose(n, args...; stride = 2, kwargs...) =
+    let
+        @assert stride == 2 "This implementation only works for stride = 2."
+        Chain(
+            WrappedFunction(x -> pad_circular(x, (1 - n, n); dims = 1)),
+            ConvTranspose((2n + 1,), args...; stride, kwargs...),
+            WrappedFunction(x -> selectdim(x, 1, (n+1):(size(x, 1)-3n+1))),
+        )
     end
 
 function FourierEncoder(dim, device)
@@ -103,7 +111,7 @@ Midcoder(nspace, nchannel, nresidual, nt, ny) =
 
 Decoder(nspace, nin, nout, nresidual, nt, ny) =
     @compact(;
-        upsample = Chain(CircularUpsample(), CircularConv((3,), nin => nout; pad = 1)),
+        upsample = CircularConvTranspose(3, nin => nout),
         res_blocks = fill(ResidualLayer(nspace, nout, nt, ny), nresidual),
     ) do (x, t_embed, y_embed)
         x = upsample(x)

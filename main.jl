@@ -27,7 +27,7 @@ kdv(n) = (;
 let
     # (; grid, params) = burgers(8192, 5e-4)
     (; grid, params) = kdv(256)
-    ustart = randomfield(grid, 10.0)
+    ustart = randomfield(grid, 10.0, Xoshiro(0))
     u = copy(ustart)
     # cache = similar(u) # (forward_euler)
     cache = similar(u), similar(u), similar(u), similar(u), similar(u) # (RK4)
@@ -64,7 +64,7 @@ end
 data = create_data(;
     grid,
     params,
-    nsample = 100,
+    nsample = 200,
     ntime = 100,
     nsubstep = 10,
     dt = 1e-3,
@@ -104,44 +104,18 @@ model = UNet(;
     nresidual = 2,
     t_embed_dim = 32,
     y_embed_dim = 32,
-    device
+    device,
 )
 unet = train(;
     model,
     rng = Xoshiro(0),
     nepoch = 5,
-    dataloader = create_dataloader(grid, data, 100, Xoshiro(0)),
+    dataloader = create_dataloader(grid, data, 200, Xoshiro(0)),
     opt = AdamW(1.0f-3),
     device,
 )
 
-let
-    model = UNet(;
-        nspace = grid.n,
-        channels = [16, 32],
-        nresidual = 2,
-        t_embed_dim = 32,
-        y_embed_dim = 32,
-        device,
-    )
-    ps, st = Lux.setup(Xoshiro(0), model) |> device
-    nsample = 1
-    x = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
-    y = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
-    t = randn(Xoshiro(0), 1, 1, nsample) |> f32 |> device
-    model((x, t, y), ps, st) |> first
-    nothing
-end
-
-let
-    model = LayerNorm((grid.n, 1))
-    ps, st = Lux.setup(Xoshiro(0), model) |> device
-    nsample = 1
-    x = randn(Xoshiro(0), grid.n, 1, nsample) |> f32 |> device
-    model(x, ps, st) |> first
-    nothing
-end
-
+# Plot one prediction
 let
     isample = 1
     itime = 1
@@ -164,8 +138,10 @@ let
     target = z[:] |> cpu_device()
     prediction = x[:] |> cpu_device()
     # lines!(ax, points(grid), input; label = "Input")
-    lines!(ax, points(grid), input + target; label = "Target")
-    lines!(ax, points(grid), input + prediction; label = "Prediction")
+    lines!(ax, points(grid), target; label = "Target")
+    lines!(ax, points(grid), prediction; label = "Prediction")
+    # lines!(ax, points(grid), input + target; label = "Target")
+    # lines!(ax, points(grid), input + prediction; label = "Prediction")
     axislegend(ax)
     save("$outdir/prediction.pdf", fig; backend = CairoMakie)
     fig
@@ -175,7 +151,7 @@ end
 let
     isample = 1
     inputs, _ = data
-    ntime = 10
+    ntime = 5
     y = reshape(inputs[:, 1, isample], :, 1, 1) |> f32 |> device
     x = similar(y) |> device
     t = fill(0.0f0, 1, 1, 1) |> device
