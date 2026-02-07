@@ -41,6 +41,16 @@ apply!(f, g::Grid, args) =
     f[i] = 3 * (b - a) / h - (u[i+2|>g] / 2 - u[i+1|>g] + u[i-1|>g] - u[i-2|>g] / 2) / h^3
 end
 
+function closureterm(u, g_dns::Grid, g_les::Grid)
+    f = zero(u)
+    apply!(force!, g_dns, (f, u, g_dns, nothing))
+    ubar = myfilter(u, g_dns, g_les)
+    fbar1 = myfilter(f, g_dns, g_les)
+    fbar2 = zero(fbar1)
+    apply!(force!, g_les, (fbar2, ubar, g_les, nothing))
+    c = fbar1 - fbar2
+end
+
 function forward_euler!(u, f, grid, visc, dt)
     apply!(force!, grid, (f, u, grid, visc))
     @. u += dt * f

@@ -46,12 +46,12 @@ ResidualLayer(nspace, nchan, nt, ny) =
     @compact(;
         block1 = Chain(
             gelu,
-            LayerNorm((nspace, nchan)),
+            BatchNorm(nchan),
             CircularConv((3,), nchan => nchan; pad = 1),
         ),
         block2 = Chain(
             gelu,
-            LayerNorm((nspace, nchan)),
+            BatchNorm(nchan),
             CircularConv((3,), nchan => nchan; pad = 1),
         ),
         time_adapter = Chain(
@@ -125,7 +125,7 @@ UNet(; nspace, channels, nresidual, t_embed_dim, y_embed_dim, device) =
     @compact(;
         init_conv = Chain(
             CircularConv((3,), 1 => channels[1]; pad = 1),
-            LayerNorm((nspace, channels[1])),
+            BatchNorm(channels[1]),
             gelu,
         ),
         time_embedder = FourierEncoder(t_embed_dim, device),
@@ -200,6 +200,39 @@ UNet(; nspace, channels, nresidual, t_embed_dim, y_embed_dim, device) =
         @return x
     end
 
+SimpleNet(; nspace, nchannel, nresidual, t_embed_dim, y_embed_dim, device) =
+    @compact(;
+        time_embedder = FourierEncoder(t_embed_dim, device),
+        y_embedder = CircularConv((3,), 1 => y_embed_dim, gelu; pad = 1),
+        init_conv = Chain(
+            CircularConv((3,), 1 => nchannel; pad = 1),
+            BatchNorm(nchannel),
+            gelu,
+        ),
+        res_blocks = fill(
+            ResidualLayer(nspace, nchannel, t_embed_dim, y_embed_dim),
+            nresidual,
+        ),
+        final_conv = CircularConv((3,), nchannel => 1; pad = 1, use_bias = false),
+    ) do (x, t, y)
+        # Embed t and y
+        t_embed = time_embedder(t)
+        y_embed = y_embedder(y)
+
+        # Initial convolution
+        x = init_conv(x)
+
+        # Inner blocks
+        for block in res_blocks
+            x = block((x, t_embed, y_embed))
+        end
+
+        # Final convolution
+        x = final_conv(x)
+
+        @return x
+    end
+
 function create_dataloader(grid, data, batchsize, rng)
     y, z = data
     y, z = reshape(y, grid.n, 1, :), reshape(z, grid.n, 1, :)
@@ -214,8 +247,12 @@ The ODE has Gaussian initial contitions `x0` and evolve via `dx = model(x, t, y)
 from time 0 to 1.
 The target trajectory `x` is a linear interpolation between `x0` and `z`.
 """
-function train(; model, rng, nepoch, dataloader, opt, device)
-    ps, st = Lux.setup(rng, model) |> device
+function train(; model, rng, nepoch, dataloader, opt, device, params = nothing)
+    ps, st = if isnothing(params)
+        Lux.setup(rng, model) |> device
+    else
+        params |> device
+    end
     train_state = Training.TrainState(model, ps, st, opt)
     loss = MSELoss()
     for iepoch = 1:nepoch, (ibatch, batch) in enumerate(dataloader)
@@ -228,7 +265,7 @@ function train(; model, rng, nepoch, dataloader, opt, device)
             Training.single_train_step!(AutoZygote(), loss, ((x, t, y), u), train_state)
         ibatch % 1 == 0 && @info "iepoch = $iepoch, ibatch = $ibatch, loss = $l"
     end
-    ps_freeze = train_state.parameters
-    st_freeze = train_state.states
-    (x, t, y) -> first(model((x, t, y), ps_freeze, Lux.testmode(st_freeze)))
+    ps = train_state.parameters
+    st = train_state.states
+    ps, st
 end

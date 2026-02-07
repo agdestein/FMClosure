@@ -7,7 +7,7 @@ end
 using FMClosure
 using CairoMakie
 using Lux
-# using LuxCUDA
+using CUDA, cuDNN
 using MLUtils
 using NNlib
 using Optimisers
@@ -64,7 +64,7 @@ end
 data = create_data(;
     grid,
     params,
-    nsample = 200,
+    nsample = 500,
     ntime = 100,
     nsubstep = 10,
     dt = 1e-3,
@@ -100,25 +100,35 @@ end
 device = gpu_device()
 model = UNet(;
     nspace = grid.n,
-    channels = [16, 32],
+    channels = [8, 16, 32, 64],
     nresidual = 2,
     t_embed_dim = 32,
     y_embed_dim = 32,
     device,
 )
-unet = train(;
-    model,
-    rng = Xoshiro(0),
-    nepoch = 5,
-    dataloader = create_dataloader(grid, data, 200, Xoshiro(0)),
-    opt = AdamW(1.0f-3),
+model = SimpleNet(;
+    nspace = grid.n,
+    nchannel = 16,
+    nresidual = 2,
+    t_embed_dim = 32,
+    y_embed_dim = 32,
     device,
 )
+ps, st = train(;
+    model,
+    rng = Xoshiro(0),
+    nepoch = 10,
+    dataloader = create_dataloader(grid, data, 300, Xoshiro(0)),
+    opt = AdamW(1.0f-3),
+    device,
+    # params = (ps, st),
+);
+unet = (x, t, y) -> first(model((x, t, y), ps, Lux.testmode(st)))
 
 # Plot one prediction
 let
     isample = 1
-    itime = 1
+    itime = 10
     y, z = data
     y = reshape(y[:, itime, isample], :, 1, 1) |> f32 |> device
     z = reshape(z[:, itime, isample], :, 1, 1) |> f32 |> device
@@ -151,11 +161,11 @@ end
 let
     isample = 1
     inputs, _ = data
-    ntime = 5
+    ntime = 10
     y = reshape(inputs[:, 1, isample], :, 1, 1) |> f32 |> device
     x = similar(y) |> device
     t = fill(0.0f0, 1, 1, 1) |> device
-    nsubstep = 100
+    nsubstep = 4
     h = 1.0f0 / nsubstep
     for itime = 1:ntime # Physical time stepping
         @show itime
